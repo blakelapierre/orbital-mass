@@ -7,7 +7,7 @@
 <style>
   * { box-sizing: border-box; }
   body { margin:0; background:#000; color:#ddd; font-family:monospace; overflow:hidden; }
-  #ui { position:absolute; top:8px; left:8px; background:rgba(0,0,0,.8); padding:10px; border-radius:6px; z-index:10; max-width:400px; }
+  #ui { position:absolute; top:8px; left:8px; background:rgba(0,0,0,.8); padding:10px; border-radius:6px; z-index:10; max-width:420px; }
   button { margin:2px; padding:6px 10px; background:#222; color:#ddd; border:1px solid #444; cursor:pointer; }
   button:hover { background:#333; }
   #info { position:absolute; bottom:8px; left:8px; background:rgba(0,0,0,.8); padding:8px; font-size:12px; max-width:520px; }
@@ -19,21 +19,20 @@
 </head>
 <body>
 <div id="ui">
-  <b>Orbital Mass</b> — high-level strategy<br>
+  <b>Orbital Mass</b> — live real-time<br>
   <span class="playerA">● Player A</span> / <span class="playerB">● Player B</span><br>
   <button id="pause">Pause</button>
-  <button id="step">Step</button>
+  <button id="step">Step (optional)</button>
   <button id="checkpoint">Checkpoint</button>
   <button id="reset">Reset</button><br>
   <button id="depositA">Mock Deposit A</button>
   <button id="depositB">Mock Deposit B</button><br>
   <span id="status">running</span><br>
-  <small>Select your ship (click), then click destination. Physics resolves. Checkpoint = on-chain root.</small>
+  <small>Runs continuously. Click a ship then click a destination. Step only speeds up time. Physics is live.</small>
 </div>
 <div id="checkpoint">No checkpoint yet</div>
 <div id="info">
-  Deposits create mass claims. Capture transfers ownership. Withdraw later redeems against deposit wallets (BCH CashTokens).
-  Two local players for testing. Real multiplayer + wallets next.
+  Live N-body sim (no button required). High-level orders + checkpoints. Deposits create mass.
 </div>
 <canvas id="c"></canvas>
 <script>
@@ -43,8 +42,8 @@ let W, H;
 function resize() { W = canvas.width = innerWidth; H = canvas.height = innerHeight; }
 resize(); addEventListener('resize', resize);
 
-const G = 5e-4;
-const dt = 0.04;
+const G = 8e-4;
+const dt = 0.08;
 let running = true;
 let epoch = 0;
 let selected = null;
@@ -66,11 +65,11 @@ class Body {
 const bodies = [];
 function init() {
   bodies.length = 0;
-  bodies.push(new Body(0, 0, 0, 0, 1200, '#ffaa33', false, 'star', 'system'));
-  bodies.push(new Body(200, 0, 0, 0.32, 50, '#4488ff', false, 'planet1', 'system'));
-  bodies.push(new Body(-240, 30, 0.08, -0.25, 30, '#44aa88', false, 'planet2', 'system'));
-  bodies.push(new Body(100, 80, 0.05, 0.1, 12, '#ff4444', true, 'claimA1', 'A'));
-  bodies.push(new Body(-110, -90, -0.04, 0.08, 10, '#44ff44', true, 'claimB1', 'B'));
+  bodies.push(new Body(0, 0, 0, 0, 1500, '#ffaa33', false, 'star', 'system'));
+  bodies.push(new Body(180, 0, 0, 0.45, 60, '#4488ff', false, 'planet1', 'system'));
+  bodies.push(new Body(-210, 40, 0.1, -0.35, 35, '#44aa88', false, 'planet2', 'system'));
+  bodies.push(new Body(90, 70, 0.15, 0.25, 12, '#ff4444', true, 'claimA1', 'A'));
+  bodies.push(new Body(-100, -80, -0.12, 0.18, 10, '#44ff44', true, 'claimB1', 'B'));
   selected = null;
   epoch = 0;
   document.getElementById('checkpoint').textContent = 'No checkpoint yet';
@@ -84,8 +83,8 @@ function applyOrders() {
     const dx = b.order.tx - b.x;
     const dy = b.order.ty - b.y;
     const dist = Math.hypot(dx, dy);
-    if (dist < 8) { b.order = null; continue; }
-    const thrust = 0.03 * Math.min(1, b.mass / 10);
+    if (dist < 10) { b.order = null; continue; }
+    const thrust = 0.06 * Math.min(1.5, b.mass / 8);
     b.vx += (dx / dist) * thrust;
     b.vy += (dy / dist) * thrust;
   }
@@ -101,7 +100,7 @@ function step(n=1) {
         if (i === j) continue;
         const b = bodies[j];
         const dx = b.x - a.x, dy = b.y - a.y;
-        const d2 = dx * dx + dy * dy + 4;
+        const d2 = dx * dx + dy * dy + 6;
         const f = G * b.mass / d2;
         const d = Math.sqrt(d2);
         ax += f * dx / d;
@@ -130,12 +129,7 @@ function makeCheckpoint() {
     vy: Math.round(b.vy * 100) / 100
   }));
   const root = simpleHash(JSON.stringify(claims));
-  const cp = {
-    epoch,
-    stateRoot: root,
-    claims,
-    note: 'This root would be committed on-chain (CashToken commitment or settlement tx). Ownership transfers on capture.'
-  };
+  const cp = { epoch, stateRoot: root, claims, note: 'On-chain checkpoint root' };
   document.getElementById('checkpoint').textContent = JSON.stringify(cp, null, 2);
   updateStatus();
 }
@@ -152,7 +146,7 @@ function simpleHash(str) {
 function draw() {
   ctx.fillStyle = '#00000a';
   ctx.fillRect(0, 0, W, H);
-  const cx = W / 2, cy = H / 2, scale = Math.min(W, H) / 600;
+  const cx = W / 2, cy = H / 2, scale = Math.min(W, H) / 500;
 
   for (const b of bodies) {
     if (b.order) {
@@ -172,15 +166,15 @@ function draw() {
     const py = cy + b.y * scale;
     ctx.beginPath();
     ctx.fillStyle = b === selected ? '#ffff00' : b.color;
-    ctx.arc(px, py, Math.max(3, b.r * scale * 0.4), 0, Math.PI * 2);
+    ctx.arc(px, py, Math.max(4, b.r * scale * 0.45), 0, Math.PI * 2);
     ctx.fill();
     if (b.isShip) {
       ctx.strokeStyle = '#fff';
       ctx.lineWidth = 1.5;
       ctx.stroke();
       ctx.fillStyle = '#fff';
-      ctx.font = '10px monospace';
-      ctx.fillText(b.owner, px + 8, py - 8);
+      ctx.font = '11px monospace';
+      ctx.fillText(b.owner, px + 10, py - 10);
     }
   }
 }
@@ -189,34 +183,34 @@ function updateStatus() {
   const aMass = bodies.filter(b => b.owner === 'A').reduce((s, b) => s + b.mass, 0);
   const bMass = bodies.filter(b => b.owner === 'B').reduce((s, b) => s + b.mass, 0);
   document.getElementById('status').textContent =
-    `epoch ${epoch} | ${running ? 'run' : 'pause'} | A:${aMass.toFixed(1)} B:${bMass.toFixed(1)} | sel:${selected ? selected.claimId : 'none'}`;
+    `LIVE | epoch ${epoch} | A:${aMass.toFixed(1)} B:${bMass.toFixed(1)} | sel:${selected ? selected.claimId : 'none'}`;
 }
 
 let last = 0;
 function loop(t) {
-  if (running && t - last > 50) { step(1); last = t; }
+  if (running && t - last > 30) { step(1); last = t; }
   draw();
   requestAnimationFrame(loop);
 }
 requestAnimationFrame(loop);
 
 document.getElementById('pause').onclick = () => { running = !running; updateStatus(); };
-document.getElementById('step').onclick = () => step(10);
+document.getElementById('step').onclick = () => step(5);
 document.getElementById('checkpoint').onclick = makeCheckpoint;
 document.getElementById('reset').onclick = () => { init(); };
 document.getElementById('depositA').onclick = () => {
-  bodies.push(new Body((Math.random()-0.5)*150, (Math.random()-0.5)*150, 0, 0, 6 + Math.random()*4, '#ff6666', true, null, 'A'));
+  bodies.push(new Body((Math.random()-0.5)*140, (Math.random()-0.5)*140, (Math.random()-0.5)*0.2, (Math.random()-0.5)*0.2, 6 + Math.random()*4, '#ff6666', true, null, 'A'));
 };
 document.getElementById('depositB').onclick = () => {
-  bodies.push(new Body((Math.random()-0.5)*150, (Math.random()-0.5)*150, 0, 0, 6 + Math.random()*4, '#66ff66', true, null, 'B'));
+  bodies.push(new Body((Math.random()-0.5)*140, (Math.random()-0.5)*140, (Math.random()-0.5)*0.2, (Math.random()-0.5)*0.2, 6 + Math.random()*4, '#66ff66', true, null, 'B'));
 };
 
 canvas.onclick = e => {
-  const cx = W / 2, cy = H / 2, scale = Math.min(W, H) / 600;
+  const cx = W / 2, cy = H / 2, scale = Math.min(W, H) / 500;
   const mx = (e.clientX - cx) / scale;
   const my = (e.clientY - cy) / scale;
 
-  let hit = null, best = 30;
+  let hit = null, best = 35;
   for (const b of bodies) {
     if (!b.isShip) continue;
     const d = Math.hypot(b.x - mx, b.y - my);
