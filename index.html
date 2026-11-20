@@ -28,7 +28,7 @@
   <button id="depositA">Mock Deposit A</button>
   <button id="depositB">Mock Deposit B</button><br>
   <span id="status">running</span><br>
-  <small>Wheel/pinch zoom. Drag pan. <b>Shift+drag</b> rotate 3D. Click ship then dest.</small>
+  <small>Wheel/pinch zoom. <b>Ctrl+drag</b> pan. <b>Shift+drag</b> rotate 3D. Click ship then dest.</small>
 </div>
 <div id="checkpoint">No checkpoint yet</div>
 <div id="info">
@@ -279,6 +279,12 @@ canvas.addEventListener('mousedown', e => {
   if (e.button !== 0) return;
   if (e.shiftKey) {
     rotating = true;
+    lastMX = e.clientX;
+    lastMY = e.clientY;
+    return;
+  }
+  if (e.ctrlKey || e.metaKey) {
+    dragging = true;
     lastMX = e.clientX;
     lastMY = e.clientY;
     return;
