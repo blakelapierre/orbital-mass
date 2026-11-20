@@ -28,7 +28,7 @@
   <button id="depositA">Mock Deposit A</button>
   <button id="depositB">Mock Deposit B</button><br>
   <span id="status">running</span><br>
-  <small>Wheel/pinch zoom. <b>Ctrl+drag</b> pan. <b>Shift+drag</b> rotate 3D. Click ship then dest.</small>
+  <small>Wheel/pinch zoom. Ctrl+drag pan. Shift+drag rotate. Click ship then dest. <b>Right-click</b> to eject smaller mass (momentum). Larger captures smaller.</small>
 </div>
 <div id="checkpoint">No checkpoint yet</div>
 <div id="info">
@@ -136,7 +136,52 @@ function step(n=1) {
       b.y += b.vy * dt;
       b.z += b.vz * dt;
     }
+
+    // capture: larger mass captures smaller enemy ships if close
+    for (const a of bodies) {
+      if (!a.isShip) continue;
+      for (const b of bodies) {
+        if (a === b || !b.isShip || a.owner === b.owner) continue;
+        if (a.mass <= b.mass) continue; // only larger captures smaller
+        const d = Math.hypot(a.x-b.x, a.y-b.y, a.z-b.z);
+        if (d < 25) {
+          b.owner = a.owner;
+          b.color = a.owner === 'A' ? '#ff6666' : '#66ff66';
+          b.captureFlash = 10;
+        }
+      }
+    }
   }
+  updateStatus();
+}
+
+
+function eject(parent, dirX, dirY, dirZ) {
+  if (!parent || !parent.isShip || parent.mass < 4) return;
+  const ejectMass = Math.max(2, parent.mass * 0.25);
+  parent.mass -= ejectMass;
+  parent.r = Math.max(4, Math.cbrt(parent.mass) * 0.5);
+  const speed = 1.8;
+  const len = Math.hypot(dirX, dirY, dirZ) || 1;
+  const ux = dirX/len, uy = dirY/len, uz = dirZ/len;
+  // momentum transfer: parent recoils opposite
+  const recoil = (ejectMass / parent.mass) * speed;
+  parent.vx -= ux * recoil;
+  parent.vy -= uy * recoil;
+  parent.vz -= uz * recoil;
+  const child = new Body(
+    parent.x + ux * 15,
+    parent.y + uy * 15,
+    parent.z + uz * 15,
+    parent.vx + ux * speed,
+    parent.vy + uy * speed,
+    parent.vz + uz * speed,
+    ejectMass,
+    parent.owner === 'A' ? '#ff8888' : '#88ff88',
+    true, null, parent.owner
+  );
+  bodies.push(child);
+  selected = child; // select the ejected mass so you can order it
   updateStatus();
 }
 
@@ -267,6 +312,7 @@ document.getElementById('depositB').onclick = () => {
 };
 
 // wheel zoom
+canvas.addEventListener('contextmenu', e => e.preventDefault());
 canvas.addEventListener('wheel', e => {
   e.preventDefault();
   const factor = e.deltaY < 0 ? 1.12 : 0.89;
@@ -276,6 +322,12 @@ canvas.addEventListener('wheel', e => {
 
 // mouse: shift+drag rotate, else pan or select/order
 canvas.addEventListener('mousedown', e => {
+  if (e.button === 2 && selected && selected.isShip) {
+    e.preventDefault();
+    const w = screenToWorld(e.clientX, e.clientY);
+    eject(selected, w.x - selected.x, w.y - selected.y, (w.z||0) - selected.z);
+    return;
+  }
   if (e.button !== 0) return;
   if (e.shiftKey) {
     rotating = true;
