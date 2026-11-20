@@ -6,7 +6,7 @@
 <title>Orbital Mass — Strategy Prototype</title>
 <style>
   * { box-sizing: border-box; }
-  body { margin:0; background:#000; color:#ddd; font-family:monospace; overflow:hidden; }
+  body { margin:0; background:#000; color:#ddd; font-family:monospace; overflow:hidden; touch-action:none; }
   #ui { position:absolute; top:8px; left:8px; background:rgba(0,0,0,.8); padding:10px; border-radius:6px; z-index:10; max-width:420px; }
   button { margin:2px; padding:6px 10px; background:#222; color:#ddd; border:1px solid #444; cursor:pointer; }
   button:hover { background:#333; }
@@ -19,7 +19,7 @@
 </head>
 <body>
 <div id="ui">
-  <b>Orbital Mass</b> — live real-time<br>
+  <b>Orbital Mass</b> — live + camera<br>
   <span class="playerA">● Player A</span> / <span class="playerB">● Player B</span><br>
   <button id="pause">Pause</button>
   <button id="step">Step (optional)</button>
@@ -28,11 +28,11 @@
   <button id="depositA">Mock Deposit A</button>
   <button id="depositB">Mock Deposit B</button><br>
   <span id="status">running</span><br>
-  <small>Runs continuously. Click a ship then click a destination. Step only speeds up time. Physics is live.</small>
+  <small>Wheel/pinch to zoom. Drag to pan. Click ship then click dest. Ships slow near target.</small>
 </div>
 <div id="checkpoint">No checkpoint yet</div>
 <div id="info">
-  Live N-body sim (no button required). High-level orders + checkpoints. Deposits create mass.
+  Live N-body. Zoom + pan. Orders decelerate on arrival.
 </div>
 <canvas id="c"></canvas>
 <script>
@@ -42,11 +42,16 @@ let W, H;
 function resize() { W = canvas.width = innerWidth; H = canvas.height = innerHeight; }
 resize(); addEventListener('resize', resize);
 
-const G = 8e-4;
-const dt = 0.08;
+const G = 6e-4;
+const dt = 0.06;
 let running = true;
 let epoch = 0;
 let selected = null;
+
+let camX = 0, camY = 0, camScale = 1.2;
+let dragging = false;
+let lastMX = 0, lastMY = 0;
+let pinchDist = 0;
 
 class Body {
   constructor(x, y, vx, vy, mass, color, isShip=false, claimId=null, owner='system') {
@@ -65,13 +70,14 @@ class Body {
 const bodies = [];
 function init() {
   bodies.length = 0;
-  bodies.push(new Body(0, 0, 0, 0, 1500, '#ffaa33', false, 'star', 'system'));
-  bodies.push(new Body(180, 0, 0, 0.45, 60, '#4488ff', false, 'planet1', 'system'));
-  bodies.push(new Body(-210, 40, 0.1, -0.35, 35, '#44aa88', false, 'planet2', 'system'));
-  bodies.push(new Body(90, 70, 0.15, 0.25, 12, '#ff4444', true, 'claimA1', 'A'));
-  bodies.push(new Body(-100, -80, -0.12, 0.18, 10, '#44ff44', true, 'claimB1', 'B'));
+  bodies.push(new Body(0, 0, 0, 0, 1800, '#ffaa33', false, 'star', 'system'));
+  bodies.push(new Body(160, 0, 0, 0.5, 70, '#4488ff', false, 'planet1', 'system'));
+  bodies.push(new Body(-190, 50, 0.12, -0.4, 40, '#44aa88', false, 'planet2', 'system'));
+  bodies.push(new Body(70, 60, 0.1, 0.15, 12, '#ff4444', true, 'claimA1', 'A'));
+  bodies.push(new Body(-80, -70, -0.08, 0.12, 10, '#44ff44', true, 'claimB1', 'B'));
   selected = null;
   epoch = 0;
+  camX = 0; camY = 0; camScale = 1.2;
   document.getElementById('checkpoint').textContent = 'No checkpoint yet';
   updateStatus();
 }
@@ -83,10 +89,18 @@ function applyOrders() {
     const dx = b.order.tx - b.x;
     const dy = b.order.ty - b.y;
     const dist = Math.hypot(dx, dy);
-    if (dist < 10) { b.order = null; continue; }
-    const thrust = 0.06 * Math.min(1.5, b.mass / 8);
-    b.vx += (dx / dist) * thrust;
-    b.vy += (dy / dist) * thrust;
+    if (dist < 12) {
+      b.vx *= 0.85;
+      b.vy *= 0.85;
+      if (Math.hypot(b.vx, b.vy) < 0.05) { b.order = null; b.vx = 0; b.vy = 0; }
+      continue;
+    }
+    const desiredSpeed = Math.min(0.8, dist * 0.015);
+    const ux = dx / dist, uy = dy / dist;
+    const targetVx = ux * desiredSpeed;
+    const targetVy = uy * desiredSpeed;
+    b.vx += (targetVx - b.vx) * 0.08;
+    b.vy += (targetVy - b.vy) * 0.08;
   }
 }
 
@@ -100,7 +114,7 @@ function step(n=1) {
         if (i === j) continue;
         const b = bodies[j];
         const dx = b.x - a.x, dy = b.y - a.y;
-        const d2 = dx * dx + dy * dy + 6;
+        const d2 = dx * dx + dy * dy + 8;
         const f = G * b.mass / d2;
         const d = Math.sqrt(d2);
         ax += f * dx / d;
@@ -143,30 +157,46 @@ function simpleHash(str) {
   return '0x' + (h >>> 0).toString(16).padStart(8, '0');
 }
 
+function worldToScreen(wx, wy) {
+  const cx = W / 2, cy = H / 2;
+  return {
+    x: cx + (wx - camX) * camScale,
+    y: cy + (wy - camY) * camScale
+  };
+}
+function screenToWorld(sx, sy) {
+  const cx = W / 2, cy = H / 2;
+  return {
+    x: camX + (sx - cx) / camScale,
+    y: camY + (sy - cy) / camScale
+  };
+}
+
 function draw() {
   ctx.fillStyle = '#00000a';
   ctx.fillRect(0, 0, W, H);
-  const cx = W / 2, cy = H / 2, scale = Math.min(W, H) / 500;
 
   for (const b of bodies) {
     if (b.order) {
+      const a = worldToScreen(b.x, b.y);
+      const t = worldToScreen(b.order.tx, b.order.ty);
       ctx.strokeStyle = b.owner === 'A' ? '#ff5555' : '#55ff55';
       ctx.setLineDash([6, 4]);
       ctx.lineWidth = 1;
       ctx.beginPath();
-      ctx.moveTo(cx + b.x * scale, cy + b.y * scale);
-      ctx.lineTo(cx + b.order.tx * scale, cy + b.order.ty * scale);
+      ctx.moveTo(a.x, a.y);
+      ctx.lineTo(t.x, t.y);
       ctx.stroke();
       ctx.setLineDash([]);
     }
   }
 
   for (const b of bodies) {
-    const px = cx + b.x * scale;
-    const py = cy + b.y * scale;
+    const p = worldToScreen(b.x, b.y);
     ctx.beginPath();
     ctx.fillStyle = b === selected ? '#ffff00' : b.color;
-    ctx.arc(px, py, Math.max(4, b.r * scale * 0.45), 0, Math.PI * 2);
+    const r = Math.max(3, b.r * camScale * 0.4);
+    ctx.arc(p.x, p.y, r, 0, Math.PI * 2);
     ctx.fill();
     if (b.isShip) {
       ctx.strokeStyle = '#fff';
@@ -174,7 +204,7 @@ function draw() {
       ctx.stroke();
       ctx.fillStyle = '#fff';
       ctx.font = '11px monospace';
-      ctx.fillText(b.owner, px + 10, py - 10);
+      ctx.fillText(b.owner, p.x + r + 4, p.y - r);
     }
   }
 }
@@ -183,7 +213,7 @@ function updateStatus() {
   const aMass = bodies.filter(b => b.owner === 'A').reduce((s, b) => s + b.mass, 0);
   const bMass = bodies.filter(b => b.owner === 'B').reduce((s, b) => s + b.mass, 0);
   document.getElementById('status').textContent =
-    `LIVE | epoch ${epoch} | A:${aMass.toFixed(1)} B:${bMass.toFixed(1)} | sel:${selected ? selected.claimId : 'none'}`;
+    `LIVE | zoom ${camScale.toFixed(2)} | epoch ${epoch} | A:${aMass.toFixed(1)} B:${bMass.toFixed(1)} | sel:${selected ? selected.claimId : 'none'}`;
 }
 
 let last = 0;
@@ -199,32 +229,109 @@ document.getElementById('step').onclick = () => step(5);
 document.getElementById('checkpoint').onclick = makeCheckpoint;
 document.getElementById('reset').onclick = () => { init(); };
 document.getElementById('depositA').onclick = () => {
-  bodies.push(new Body((Math.random()-0.5)*140, (Math.random()-0.5)*140, (Math.random()-0.5)*0.2, (Math.random()-0.5)*0.2, 6 + Math.random()*4, '#ff6666', true, null, 'A'));
+  bodies.push(new Body((Math.random()-0.5)*120, (Math.random()-0.5)*120, (Math.random()-0.5)*0.15, (Math.random()-0.5)*0.15, 6 + Math.random()*4, '#ff6666', true, null, 'A'));
 };
 document.getElementById('depositB').onclick = () => {
-  bodies.push(new Body((Math.random()-0.5)*140, (Math.random()-0.5)*140, (Math.random()-0.5)*0.2, (Math.random()-0.5)*0.2, 6 + Math.random()*4, '#66ff66', true, null, 'B'));
+  bodies.push(new Body((Math.random()-0.5)*120, (Math.random()-0.5)*120, (Math.random()-0.5)*0.15, (Math.random()-0.5)*0.15, 6 + Math.random()*4, '#66ff66', true, null, 'B'));
 };
 
-canvas.onclick = e => {
-  const cx = W / 2, cy = H / 2, scale = Math.min(W, H) / 500;
-  const mx = (e.clientX - cx) / scale;
-  const my = (e.clientY - cy) / scale;
+canvas.addEventListener('wheel', e => {
+  e.preventDefault();
+  const before = screenToWorld(e.clientX, e.clientY);
+  const factor = e.deltaY < 0 ? 1.1 : 0.9;
+  camScale = Math.max(0.2, Math.min(8, camScale * factor));
+  const after = screenToWorld(e.clientX, e.clientY);
+  camX += before.x - after.x;
+  camY += before.y - after.y;
+  updateStatus();
+}, { passive: false });
 
-  let hit = null, best = 35;
+canvas.addEventListener('mousedown', e => {
+  if (e.button !== 0) return;
+  const w = screenToWorld(e.clientX, e.clientY);
+  let hit = null, best = 30 / camScale;
   for (const b of bodies) {
     if (!b.isShip) continue;
-    const d = Math.hypot(b.x - mx, b.y - my);
+    const d = Math.hypot(b.x - w.x, b.y - w.y);
     if (d < best) { best = d; hit = b; }
   }
   if (hit) {
     selected = hit;
     updateStatus();
+    dragging = false;
     return;
   }
   if (selected && selected.isShip) {
-    selected.order = { tx: mx, ty: my };
+    selected.order = { tx: w.x, ty: w.y };
+    dragging = false;
+    return;
   }
-};
+  dragging = true;
+  lastMX = e.clientX;
+  lastMY = e.clientY;
+});
+canvas.addEventListener('mousemove', e => {
+  if (!dragging) return;
+  const dx = (e.clientX - lastMX) / camScale;
+  const dy = (e.clientY - lastMY) / camScale;
+  camX -= dx;
+  camY -= dy;
+  lastMX = e.clientX;
+  lastMY = e.clientY;
+});
+canvas.addEventListener('mouseup', () => { dragging = false; });
+canvas.addEventListener('mouseleave', () => { dragging = false; });
+
+canvas.addEventListener('touchstart', e => {
+  if (e.touches.length === 2) {
+    const dx = e.touches[0].clientX - e.touches[1].clientX;
+    const dy = e.touches[0].clientY - e.touches[1].clientY;
+    pinchDist = Math.hypot(dx, dy);
+    dragging = false;
+  } else if (e.touches.length === 1) {
+    const t = e.touches[0];
+    const w = screenToWorld(t.clientX, t.clientY);
+    let hit = null, best = 40 / camScale;
+    for (const b of bodies) {
+      if (!b.isShip) continue;
+      const d = Math.hypot(b.x - w.x, b.y - w.y);
+      if (d < best) { best = d; hit = b; }
+    }
+    if (hit) {
+      selected = hit;
+      updateStatus();
+      dragging = false;
+    } else if (selected && selected.isShip) {
+      selected.order = { tx: w.x, ty: w.y };
+      dragging = false;
+    } else {
+      dragging = true;
+      lastMX = t.clientX;
+      lastMY = t.clientY;
+    }
+  }
+}, { passive: false });
+canvas.addEventListener('touchmove', e => {
+  e.preventDefault();
+  if (e.touches.length === 2 && pinchDist > 0) {
+    const dx = e.touches[0].clientX - e.touches[1].clientX;
+    const dy = e.touches[0].clientY - e.touches[1].clientY;
+    const dist = Math.hypot(dx, dy);
+    const factor = dist / pinchDist;
+    camScale = Math.max(0.2, Math.min(8, camScale * factor));
+    pinchDist = dist;
+    updateStatus();
+  } else if (e.touches.length === 1 && dragging) {
+    const t = e.touches[0];
+    const dx = (t.clientX - lastMX) / camScale;
+    const dy = (t.clientY - lastMY) / camScale;
+    camX -= dx;
+    camY -= dy;
+    lastMX = t.clientX;
+    lastMY = t.clientY;
+  }
+}, { passive: false });
+canvas.addEventListener('touchend', () => { dragging = false; pinchDist = 0; });
 </script>
 </body>
 </html>
