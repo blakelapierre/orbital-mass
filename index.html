@@ -1,0 +1,385 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Orbital Mass — Strategy Prototype</title>
+<style>
+  * { box-sizing: border-box; }
+  body { margin:0; background:#000; color:#ddd; font-family:monospace; overflow:hidden; touch-action:none; }
+  #ui { position:absolute; top:8px; left:8px; background:rgba(0,0,0,.8); padding:10px; border-radius:6px; z-index:10; max-width:440px; }
+  button { margin:2px; padding:6px 10px; background:#222; color:#ddd; border:1px solid #444; cursor:pointer; }
+  button:hover { background:#333; }
+  #info { position:absolute; bottom:8px; left:8px; background:rgba(0,0,0,.8); padding:8px; font-size:12px; max-width:520px; }
+  #checkpoint { position:absolute; top:8px; right:8px; background:rgba(0,0,0,.85); padding:10px; max-width:340px; font-size:11px; white-space:pre-wrap; max-height:50vh; overflow:auto; border:1px solid #333; }
+  canvas { display:block; }
+  .playerA { color:#ff5555; }
+  .playerB { color:#55ff55; }
+</style>
+</head>
+<body>
+<div id="ui">
+  <b>Orbital Mass</b> — live + 3D camera<br>
+  <span class="playerA">● Player A</span> / <span class="playerB">● Player B</span><br>
+  <button id="pause">Pause</button>
+  <button id="step">Step (optional)</button>
+  <button id="checkpoint">Checkpoint</button>
+  <button id="reset">Reset</button><br>
+  <button id="depositA">Mock Deposit A</button>
+  <button id="depositB">Mock Deposit B</button><br>
+  <span id="status">running</span><br>
+  <small>Wheel/pinch zoom. Drag pan. <b>Shift+drag</b> rotate 3D. Click ship then dest.</small>
+</div>
+<div id="checkpoint">No checkpoint yet</div>
+<div id="info">
+  Faster ships. Shift+drag orbits the view. Orders still decelerate on arrival.
+</div>
+<canvas id="c"></canvas>
+<script>
+const canvas = document.getElementById('c');
+const ctx = canvas.getContext('2d');
+let W, H;
+function resize() { W = canvas.width = innerWidth; H = canvas.height = innerHeight; }
+resize(); addEventListener('resize', resize);
+
+const G = 4e-4;
+const dt = 0.05;
+let running = true;
+let epoch = 0;
+let selected = null;
+
+// camera
+let camX = 0, camY = 0, camScale = 1.4;
+let rotX = 0.15, rotY = 0.2; // 3D rotation
+let dragging = false;
+let rotating = false;
+let lastMX = 0, lastMY = 0;
+let pinchDist = 0;
+
+class Body {
+  constructor(x, y, z, vx, vy, vz, mass, color, isShip=false, claimId=null, owner='system') {
+    this.x = x; this.y = y; this.z = z;
+    this.vx = vx; this.vy = vy; this.vz = vz;
+    this.mass = mass;
+    this.color = color;
+    this.isShip = isShip;
+    this.claimId = claimId || Math.random().toString(36).slice(2, 8);
+    this.owner = owner;
+    this.order = null;
+    this.r = Math.max(4, Math.cbrt(mass) * 0.5);
+  }
+}
+
+const bodies = [];
+function init() {
+  bodies.length = 0;
+  bodies.push(new Body(0, 0, 0, 0, 0, 0, 2000, '#ffaa33', false, 'star', 'system'));
+  bodies.push(new Body(180, 0, 20, 0, 0.6, 0.05, 80, '#4488ff', false, 'planet1', 'system'));
+  bodies.push(new Body(-200, 60, -30, 0.1, -0.45, 0.02, 45, '#44aa88', false, 'planet2', 'system'));
+  bodies.push(new Body(80, 70, 10, 0.2, 0.3, 0.05, 22, '#ff2222', true, 'claimA1', 'A'));
+  bodies.push(new Body(-90, -80, -15, -0.15, 0.22, -0.04, 18, '#22ff22', true, 'claimB1', 'B'));
+  selected = null;
+  epoch = 0;
+  camX = 0; camY = 0; camScale = 1.4;
+  rotX = 0.15; rotY = 0.2;
+  document.getElementById('checkpoint').textContent = 'No checkpoint yet';
+  updateStatus();
+}
+init();
+
+function applyOrders() {
+  for (const b of bodies) {
+    if (!b.isShip || !b.order) continue;
+    const dx = b.order.tx - b.x;
+    const dy = b.order.ty - b.y;
+    const dz = (b.order.tz || 0) - b.z;
+    const dist = Math.hypot(dx, dy, dz);
+    if (dist < 15) {
+      b.vx *= 0.82; b.vy *= 0.82; b.vz *= 0.82;
+      if (Math.hypot(b.vx, b.vy, b.vz) < 0.08) {
+        b.order = null;
+        b.vx = b.vy = b.vz = 0;
+      }
+      continue;
+    }
+    const desired = Math.min(1.4, dist * 0.025);
+    const ux = dx / dist, uy = dy / dist, uz = dz / dist;
+    b.vx += (ux * desired - b.vx) * 0.12;
+    b.vy += (uy * desired - b.vy) * 0.12;
+    b.vz += (uz * desired - b.vz) * 0.12;
+  }
+}
+
+function step(n=1) {
+  for (let s = 0; s < n; s++) {
+    applyOrders();
+    for (let i = 0; i < bodies.length; i++) {
+      const a = bodies[i];
+      let ax = 0, ay = 0, az = 0;
+      for (let j = 0; j < bodies.length; j++) {
+        if (i === j) continue;
+        const b = bodies[j];
+        const dx = b.x - a.x, dy = b.y - a.y, dz = b.z - a.z;
+        const d2 = dx*dx + dy*dy + dz*dz + 10;
+        const f = G * b.mass / d2;
+        const d = Math.sqrt(d2);
+        ax += f * dx / d;
+        ay += f * dy / d;
+        az += f * dz / d;
+      }
+      a.vx += ax * dt;
+      a.vy += ay * dt;
+      a.vz += az * dt;
+    }
+    for (const b of bodies) {
+      b.x += b.vx * dt;
+      b.y += b.vy * dt;
+      b.z += b.vz * dt;
+    }
+  }
+  updateStatus();
+}
+
+function makeCheckpoint() {
+  epoch++;
+  const claims = bodies.filter(b => b.isShip).map(b => ({
+    id: b.claimId,
+    owner: b.owner,
+    mass: Math.round(b.mass * 10) / 10,
+    x: Math.round(b.x),
+    y: Math.round(b.y),
+    z: Math.round(b.z)
+  }));
+  const root = simpleHash(JSON.stringify(claims));
+  const cp = { epoch, stateRoot: root, claims, note: 'On-chain checkpoint root' };
+  document.getElementById('checkpoint').textContent = JSON.stringify(cp, null, 2);
+  updateStatus();
+}
+
+function simpleHash(str) {
+  let h = 2166136261;
+  for (let i = 0; i < str.length; i++) {
+    h ^= str.charCodeAt(i);
+    h = Math.imul(h, 16777619);
+  }
+  return '0x' + (h >>> 0).toString(16).padStart(8, '0');
+}
+
+function rotate(x, y, z) {
+  // rotate Y then X
+  const cy = Math.cos(rotY), sy = Math.sin(rotY);
+  const x1 = x * cy - z * sy;
+  const z1 = x * sy + z * cy;
+  const cx = Math.cos(rotX), sx = Math.sin(rotX);
+  const y1 = y * cx - z1 * sx;
+  const z2 = y * sx + z1 * cx;
+  return { x: x1, y: y1, z: z2 };
+}
+
+function worldToScreen(wx, wy, wz) {
+  const r = rotate(wx - camX, wy - camY, wz);
+  const perspective = 400 / (400 + r.z);
+  return {
+    x: W/2 + r.x * camScale * perspective,
+    y: H/2 + r.y * camScale * perspective,
+    z: r.z
+  };
+}
+function screenToWorld(sx, sy) {
+  // approximate inverse for order placement (on z=0 plane)
+  const cx = W/2, cy = H/2;
+  const dx = (sx - cx) / camScale;
+  const dy = (sy - cy) / camScale;
+  // simple unrotate for placement
+  const cy = Math.cos(-rotY), sy = Math.sin(-rotY);
+  const cxr = Math.cos(-rotX), sxr = Math.sin(-rotX);
+  let x = dx, y = dy, z = 0;
+  const y1 = y * cxr - z * sxr;
+  const z1 = y * sxr + z * cxr;
+  const x1 = x * cy - z1 * sy;
+  const z2 = x * sy + z1 * cy;
+  return { x: camX + x1, y: camY + y1, z: z2 };
+}
+
+function draw() {
+  ctx.fillStyle = '#00000a';
+  ctx.fillRect(0, 0, W, H);
+
+  // sort by z for painter's algorithm
+  const projected = bodies.map(b => ({ b, p: worldToScreen(b.x, b.y, b.z) }));
+  projected.sort((a, b) => b.p.z - a.p.z);
+
+  for (const { b, p } of projected) {
+    if (b.order) {
+      const t = worldToScreen(b.order.tx, b.order.ty, b.order.tz || 0);
+      ctx.strokeStyle = b.owner === 'A' ? '#ff5555' : '#55ff55';
+      ctx.setLineDash([6, 4]);
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      ctx.moveTo(p.x, p.y);
+      ctx.lineTo(t.x, t.y);
+      ctx.stroke();
+      ctx.setLineDash([]);
+    }
+  }
+
+  for (const { b, p } of projected) {
+    ctx.beginPath();
+    ctx.fillStyle = b === selected ? '#ffff00' : b.color;
+    const r = Math.max(3, b.r * camScale * 0.45 * (400 / (400 + p.z)));
+    ctx.arc(p.x, p.y, r, 0, Math.PI * 2);
+    ctx.fill();
+    if (b.isShip) {
+      ctx.strokeStyle = '#fff';
+      ctx.lineWidth = 1.5;
+      ctx.stroke();
+      ctx.fillStyle = '#fff';
+      ctx.font = '11px monospace';
+      ctx.fillText(b.owner, p.x + r + 4, p.y - r);
+    }
+  }
+}
+
+function updateStatus() {
+  const aMass = bodies.filter(b => b.owner === 'A').reduce((s, b) => s + b.mass, 0);
+  const bMass = bodies.filter(b => b.owner === 'B').reduce((s, b) => s + b.mass, 0);
+  document.getElementById('status').textContent =
+    `LIVE | zoom ${camScale.toFixed(2)} | rot ${(rotY*57).toFixed(0)}° | epoch ${epoch} | A:${aMass.toFixed(1)} B:${bMass.toFixed(1)} | sel:${selected ? selected.claimId : 'none'}`;
+}
+
+let last = 0;
+function loop(t) {
+  if (running && t - last > 25) { step(1); last = t; }
+  draw();
+  requestAnimationFrame(loop);
+}
+requestAnimationFrame(loop);
+
+document.getElementById('pause').onclick = () => { running = !running; updateStatus(); };
+document.getElementById('step').onclick = () => step(4);
+document.getElementById('checkpoint').onclick = makeCheckpoint;
+document.getElementById('reset').onclick = () => { init(); };
+document.getElementById('depositA').onclick = () => {
+  bodies.push(new Body((Math.random()-0.5)*140, (Math.random()-0.5)*140, (Math.random()-0.5)*40, (Math.random()-0.5)*0.3, (Math.random()-0.5)*0.3, 0, 7 + Math.random()*5, '#ff6666', true, null, 'A'));
+};
+document.getElementById('depositB').onclick = () => {
+  bodies.push(new Body((Math.random()-0.5)*140, (Math.random()-0.5)*140, (Math.random()-0.5)*40, (Math.random()-0.5)*0.3, (Math.random()-0.5)*0.3, 0, 7 + Math.random()*5, '#66ff66', true, null, 'B'));
+};
+
+// wheel zoom
+canvas.addEventListener('wheel', e => {
+  e.preventDefault();
+  const factor = e.deltaY < 0 ? 1.12 : 0.89;
+  camScale = Math.max(0.15, Math.min(10, camScale * factor));
+  updateStatus();
+}, { passive: false });
+
+// mouse: shift+drag rotate, else pan or select/order
+canvas.addEventListener('mousedown', e => {
+  if (e.button !== 0) return;
+  if (e.shiftKey) {
+    rotating = true;
+    lastMX = e.clientX;
+    lastMY = e.clientY;
+    return;
+  }
+  const w = screenToWorld(e.clientX, e.clientY);
+  let hit = null, best = 35 / camScale;
+  for (const b of bodies) {
+    if (!b.isShip) continue;
+    const d = Math.hypot(b.x - w.x, b.y - w.y);
+    if (d < best) { best = d; hit = b; }
+  }
+  if (hit) {
+    selected = hit;
+    updateStatus();
+    return;
+  }
+  if (selected && selected.isShip) {
+    selected.order = { tx: w.x, ty: w.y, tz: 0 };
+    return;
+  }
+  dragging = true;
+  lastMX = e.clientX;
+  lastMY = e.clientY;
+});
+canvas.addEventListener('mousemove', e => {
+  if (rotating) {
+    const dx = e.clientX - lastMX;
+    const dy = e.clientY - lastMY;
+    rotY += dx * 0.008;
+    rotX += dy * 0.008;
+    rotX = Math.max(-1.4, Math.min(1.4, rotX));
+    lastMX = e.clientX;
+    lastMY = e.clientY;
+    updateStatus();
+    return;
+  }
+  if (!dragging) return;
+  const dx = (e.clientX - lastMX) / camScale;
+  const dy = (e.clientY - lastMY) / camScale;
+  camX -= dx;
+  camY -= dy;
+  lastMX = e.clientX;
+  lastMY = e.clientY;
+});
+canvas.addEventListener('mouseup', () => { dragging = false; rotating = false; });
+canvas.addEventListener('mouseleave', () => { dragging = false; rotating = false; });
+
+// touch: two-finger rotate-ish / pinch, one-finger pan or select
+canvas.addEventListener('touchstart', e => {
+  if (e.touches.length === 2) {
+    const dx = e.touches[0].clientX - e.touches[1].clientX;
+    const dy = e.touches[0].clientY - e.touches[1].clientY;
+    pinchDist = Math.hypot(dx, dy);
+    rotating = true;
+  } else if (e.touches.length === 1) {
+    const t = e.touches[0];
+    const w = screenToWorld(t.clientX, t.clientY);
+    let hit = null, best = 45 / camScale;
+    for (const b of bodies) {
+      if (!b.isShip) continue;
+      const d = Math.hypot(b.x - w.x, b.y - w.y);
+      if (d < best) { best = d; hit = b; }
+    }
+    if (hit) {
+      selected = hit;
+      updateStatus();
+    } else if (selected && selected.isShip) {
+      selected.order = { tx: w.x, ty: w.y, tz: 0 };
+    } else {
+      dragging = true;
+      lastMX = t.clientX;
+      lastMY = t.clientY;
+    }
+  }
+}, { passive: false });
+canvas.addEventListener('touchmove', e => {
+  e.preventDefault();
+  if (e.touches.length === 2 && pinchDist > 0) {
+    const dx = e.touches[0].clientX - e.touches[1].clientX;
+    const dy = e.touches[0].clientY - e.touches[1].clientY;
+    const dist = Math.hypot(dx, dy);
+    camScale = Math.max(0.15, Math.min(10, camScale * (dist / pinchDist)));
+    pinchDist = dist;
+    // crude rotate from midpoint movement
+    const midX = (e.touches[0].clientX + e.touches[1].clientX) / 2;
+    const midY = (e.touches[0].clientY + e.touches[1].clientY) / 2;
+    rotY += (midX - lastMX) * 0.005;
+    rotX += (midY - lastMY) * 0.005;
+    lastMX = midX; lastMY = midY;
+    updateStatus();
+  } else if (e.touches.length === 1 && dragging) {
+    const t = e.touches[0];
+    const dx = (t.clientX - lastMX) / camScale;
+    const dy = (t.clientY - lastMY) / camScale;
+    camX -= dx;
+    camY -= dy;
+    lastMX = t.clientX;
+    lastMY = t.clientY;
+  }
+}, { passive: false });
+canvas.addEventListener('touchend', () => { dragging = false; rotating = false; pinchDist = 0; });
+</script>
+</body>
+</html>
