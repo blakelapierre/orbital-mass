@@ -187,17 +187,17 @@ function worldToScreen(wx, wy, wz) {
 }
 function screenToWorld(sx, sy) {
   // approximate inverse for order placement (on z=0 plane)
-  const cx = W/2, cy = H/2;
-  const dx = (sx - cx) / camScale;
-  const dy = (sy - cy) / camScale;
+  const scx = W/2, scy = H/2;
+  const dx = (sx - scx) / camScale;
+  const dy = (sy - scy) / camScale;
   // simple unrotate for placement
-  const cy = Math.cos(-rotY), sy = Math.sin(-rotY);
-  const cxr = Math.cos(-rotX), sxr = Math.sin(-rotX);
+  const cosY = Math.cos(-rotY), sinY = Math.sin(-rotY);
+  const cosX = Math.cos(-rotX), sinX = Math.sin(-rotX);
   let x = dx, y = dy, z = 0;
-  const y1 = y * cxr - z * sxr;
-  const z1 = y * sxr + z * cxr;
-  const x1 = x * cy - z1 * sy;
-  const z2 = x * sy + z1 * cy;
+  const y1 = y * cosX - z * sinX;
+  const z1 = y * sinX + z * cosX;
+  const x1 = x * cosY - z1 * sinY;
+  const z2 = x * sinY + z1 * cosY;
   return { x: camX + x1, y: camY + y1, z: z2 };
 }
 
